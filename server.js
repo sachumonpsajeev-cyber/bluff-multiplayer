@@ -1,156 +1,133 @@
-const express = require('express');
-const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http);
-
-// --- GLOBAL GAME STATE ---
-let gameState = {
-    players: {},      
-    pile: [],         
-    currentRank: 'A', 
-    turnIndex: 0,
-    lastPlayerId: null,
-    lastPlayedCards: []
-};
-
-app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/index.html');
-});
-
-// --- HELPER: DECK CREATOR ---
-function createAndShuffleDeck() {
-    const suits = ['♠', '♣', '♥', '♦'];
-    const values = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
-    let deck = [];
-    for (let s of suits) {
-        for (let v of values) {
-            deck.push({ suit: s, rank: v });
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bluff Royale + AI Bot</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a2a3a; color: white; text-align: center; }
+        .hidden { display: none; }
+        .card {
+            background: white; color: black; padding: 15px; margin: 5px;
+            border-radius: 10px; display: inline-block; cursor: pointer;
+            width: 50px; height: 80px; font-weight: bold; border: 3px solid transparent;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: 0.2s;
         }
-    }
-    for (let i = deck.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [deck[i], deck[j]] = [deck[j], deck[i]];
-    }
-    return deck;
-}
+        .card.selected { border-color: #f1c40f; background: #fffde7; scale: 1.05; }
+        #table-area { background: #27ae60; padding: 30px; border-radius: 100px; width: 250px; margin: 20px auto; border: 8px solid #3e2723; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; border-radius: 5px; border: none; margin: 5px; font-weight: bold; }
+        #play-btn { background: #2ecc71; color: white; }
+        #bluff-btn { background: #e74c3c; color: white; }
+        #bot-btn { background: #9b59b6; color: white; }
+    </style>
+</head>
+<body>
 
-// --- NETWORK LOGIC ---
-io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+    <div id="join-screen">
+        <h1>🃏 Bluff Multiplayer</h1>
+        <input type="text" id="name-input" placeholder="Your Name" style="padding: 10px;">
+        <button onclick="join()" style="background: #3498db; color: white;">Join Game</button>
+    </div>
 
-    // 1. Join Lobby
-    socket.on('join_game', (userName) => {
-        gameState.players[socket.id] = {
-            id: socket.id,
-            name: userName || "Player",
-            hand: []
-        };
-        io.emit('player_list_updated', Object.values(gameState.players));
-    });
+    <div id="lobby" class="hidden">
+        <h2>Game Lobby</h2>
+        <div id="player-list"></div>
+        <button id="bot-btn" onclick="addBot()">➕ Add AI Bot</button>
+        <button onclick="startGame()" style="background: #f39c12; color: white;">Start Game</button>
+    </div>
 
-    // 2. Start Game
-    socket.on('start_game', () => {
-        const deck = createAndShuffleDeck();
-        const ids = Object.keys(gameState.players);
-        if (ids.length < 2) return;
+    <div id="game-board" class="hidden">
+        <h2 id="turn-msg">Waiting...</h2>
+        <div id="table-area">
+            <div style="font-size: 2.5rem;" id="pile-count">0</div>
+            <div>Cards in Pile</div>
+        </div>
+        <p>Current Claim: <strong id="target-rank" style="color: #f1c40f;">None</strong></p>
+        
+        <h3>Your Hand</h3>
+        <div id="my-cards"></div>
+        <br>
+        <button id="play-btn" onclick="playCards()">Play Cards</button>
+        <button id="bluff-btn" onclick="callBluff()">CHALLENGE!</button>
+    </div>
 
-        ids.forEach(id => gameState.players[id].hand = []);
-        let i = 0;
-        while (deck.length > 0) {
-            gameState.players[ids[i % ids.length]].hand.push(deck.pop());
-            i++;
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let myHand = [];
+        let selectedCards = [];
+
+        function join() {
+            const name = document.getElementById('name-input').value;
+            if(name) socket.emit('join_game', name);
+            document.getElementById('join-screen').classList.add('hidden');
+            document.getElementById('lobby').classList.remove('hidden');
         }
 
-        gameState.pile = [];
-        gameState.turnIndex = 0;
+        function addBot() { socket.emit('add_bot'); }
 
-        ids.forEach(id => {
-            io.to(id).emit('game_started', {
-                hand: gameState.players[id].hand,
-                turnIndex: gameState.turnIndex,
-                nextPlayerName: gameState.players[ids[0]].name
+        socket.on('player_list_updated', (players) => {
+            document.getElementById('player-list').innerHTML = players.map(p => `<div>👤 ${p.name}</div>`).join('');
+        });
+
+        function startGame() { socket.emit('start_game'); }
+
+        socket.on('game_started', (data) => {
+            document.getElementById('lobby').classList.add('hidden');
+            document.getElementById('game-board').classList.remove('hidden');
+            renderHand(data.hand);
+            updateUI(data);
+        });
+
+        function renderHand(hand) {
+            myHand = hand;
+            selectedCards = [];
+            const container = document.getElementById('my-cards');
+            container.innerHTML = '';
+            hand.forEach((card) => {
+                const el = document.createElement('div');
+                el.className = 'card';
+                el.innerText = card.rank + card.suit;
+                el.onclick = () => {
+                    el.classList.toggle('selected');
+                    const idx = selectedCards.findIndex(c => c.rank === card.rank && c.suit === card.suit);
+                    if(idx > -1) selectedCards.splice(idx, 1);
+                    else selectedCards.push(card);
+                };
+                container.appendChild(el);
             });
-        });
-    });
-
-    // 3. Play Move
-    socket.on('play_move', (data) => {
-        const player = gameState.players[socket.id];
-        gameState.lastPlayedCards = data.cards;
-        gameState.lastPlayerId = socket.id;
-        gameState.pile.push(...data.cards);
-
-        // Remove played cards from hand
-        player.hand = player.hand.filter(card => 
-            !data.cards.some(c => c.rank === card.rank && c.suit === card.suit)
-        );
-
-        // WIN CONDITION CHECK
-        if (player.hand.length === 0) {
-            io.emit('game_over', { winner: player.name });
-            return; 
         }
 
-        const ids = Object.keys(gameState.players);
-        gameState.turnIndex = (gameState.turnIndex + 1) % ids.length;
-        const nextPlayer = gameState.players[ids[gameState.turnIndex]];
+        function playCards() {
+            if(selectedCards.length === 0) return alert("Select cards!");
+            
+            // DYNAMIC RANK PICKER
+            const claim = prompt("What rank are you claiming? (A, 2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K)", "A");
+            if(!claim) return;
 
-        io.emit('update_pile', {
-            count: gameState.pile.length,
-            nextPlayerName: nextPlayer.name,
-            lastClaim: `${data.cards.length} ${gameState.currentRank}'s`
+            socket.emit('play_move', { 
+                cards: selectedCards, 
+                claimedRank: claim.toUpperCase() 
+            });
+        }
+
+        function callBluff() { socket.emit('call_bluff'); }
+
+        socket.on('new_hand', (hand) => renderHand(hand));
+
+        socket.on('update_pile', (data) => updateUI(data));
+
+        function updateUI(data) {
+            document.getElementById('pile-count').innerText = data.count || 0;
+            document.getElementById('turn-msg').innerText = `${data.nextPlayerName}'s Turn`;
+            document.getElementById('target-rank').innerText = data.currentRank || "A";
+        }
+
+        socket.on('bluff_result', (data) => alert(data.message));
+
+        socket.on('game_over', (data) => {
+            alert("🏆 " + data.winner + " won!");
+            location.reload();
         });
-
-        socket.emit('new_hand', player.hand);
-    });
-
-    // 4. Call Bluff
-    socket.on('call_bluff', () => {
-        if (!gameState.lastPlayerId || gameState.pile.length === 0) return;
-
-        const isLying = gameState.lastPlayedCards.some(c => c.rank !== gameState.currentRank);
-        const liarId = gameState.lastPlayerId;
-        const challengerId = socket.id;
-        const loserId = isLying ? liarId : challengerId;
-
-        const message = isLying ? 
-            `${gameState.players[liarId].name} was LYING!` : 
-            `${gameState.players[liarId].name} told the truth!`;
-
-        gameState.players[loserId].hand.push(...gameState.pile);
-        gameState.pile = [];
-        
-        io.emit('bluff_result', { message: message + " Loser takes the pile." });
-        io.to(loserId).emit('new_hand', gameState.players[loserId].hand);
-        
-        // After a bluff, it's the loser's turn to start fresh
-        const ids = Object.keys(gameState.players);
-        gameState.turnIndex = ids.indexOf(loserId);
-
-        io.emit('update_pile', { 
-            count: 0, 
-            nextPlayerName: gameState.players[loserId].name 
-        });
-    });
-
-    // 5. Reset Game (Returning to Lobby)
-    socket.on('reset_game', () => {
-        gameState.pile = [];
-        gameState.lastPlayedCards = [];
-        gameState.lastPlayerId = null;
-        gameState.turnIndex = 0;
-        Object.keys(gameState.players).forEach(id => {
-            gameState.players[id].hand = [];
-        });
-        io.emit('game_reset_announced');
-    });
-
-    socket.on('disconnect', () => {
-        delete gameState.players[socket.id];
-        io.emit('player_list_updated', Object.values(gameState.players));
-    });
-});
-
-// Change to 5000 if 3000 is still "In Use"
-const PORT = 3000;
-http.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+    </script>
+</body>
+</html>
