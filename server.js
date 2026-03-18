@@ -38,6 +38,7 @@ function createAndShuffleDeck() {
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
+    // 1. Join Lobby
     socket.on('join_game', (userName) => {
         gameState.players[socket.id] = {
             id: socket.id,
@@ -47,6 +48,7 @@ io.on('connection', (socket) => {
         io.emit('player_list_updated', Object.values(gameState.players));
     });
 
+    // 2. Start Game
     socket.on('start_game', () => {
         const deck = createAndShuffleDeck();
         const ids = Object.keys(gameState.players);
@@ -71,15 +73,23 @@ io.on('connection', (socket) => {
         });
     });
 
+    // 3. Play Move
     socket.on('play_move', (data) => {
         const player = gameState.players[socket.id];
         gameState.lastPlayedCards = data.cards;
         gameState.lastPlayerId = socket.id;
         gameState.pile.push(...data.cards);
 
+        // Remove played cards from hand
         player.hand = player.hand.filter(card => 
             !data.cards.some(c => c.rank === card.rank && c.suit === card.suit)
         );
+
+        // WIN CONDITION CHECK
+        if (player.hand.length === 0) {
+            io.emit('game_over', { winner: player.name });
+            return; 
+        }
 
         const ids = Object.keys(gameState.players);
         gameState.turnIndex = (gameState.turnIndex + 1) % ids.length;
@@ -94,6 +104,7 @@ io.on('connection', (socket) => {
         socket.emit('new_hand', player.hand);
     });
 
+    // 4. Call Bluff
     socket.on('call_bluff', () => {
         if (!gameState.lastPlayerId || gameState.pile.length === 0) return;
 
@@ -111,7 +122,27 @@ io.on('connection', (socket) => {
         
         io.emit('bluff_result', { message: message + " Loser takes the pile." });
         io.to(loserId).emit('new_hand', gameState.players[loserId].hand);
-        io.emit('update_pile', { count: 0, nextPlayerName: gameState.players[loserId].name });
+        
+        // After a bluff, it's the loser's turn to start fresh
+        const ids = Object.keys(gameState.players);
+        gameState.turnIndex = ids.indexOf(loserId);
+
+        io.emit('update_pile', { 
+            count: 0, 
+            nextPlayerName: gameState.players[loserId].name 
+        });
+    });
+
+    // 5. Reset Game (Returning to Lobby)
+    socket.on('reset_game', () => {
+        gameState.pile = [];
+        gameState.lastPlayedCards = [];
+        gameState.lastPlayerId = null;
+        gameState.turnIndex = 0;
+        Object.keys(gameState.players).forEach(id => {
+            gameState.players[id].hand = [];
+        });
+        io.emit('game_reset_announced');
     });
 
     socket.on('disconnect', () => {
@@ -120,4 +151,6 @@ io.on('connection', (socket) => {
     });
 });
 
-http.listen(3000, () => console.log('Server running at http://localhost:3000'));
+// Change to 5000 if 3000 is still "In Use"
+const PORT = 3000;
+http.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
