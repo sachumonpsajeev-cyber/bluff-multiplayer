@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multiplayer Bluff Royale</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #1a2a3a; color: white; text-align: center; }
+        .hidden { display: none; }
+        
+        /* Card Styling */
+        .card {
+            background: white; color: black; padding: 15px; margin: 5px;
+            border-radius: 10px; display: inline-block; cursor: pointer;
+            width: 50px; height: 80px; font-weight: bold; border: 3px solid transparent;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); transition: 0.2s;
+        }
+        .card:hover { transform: translateY(-5px); }
+        .card.selected { border-color: #f1c40f; background: #fffde7; }
+        
+        /* Table Layout */
+        #table-area { background: #27ae60; padding: 30px; border-radius: 100px; width: 300px; margin: 20px auto; border: 8px solid #3e2723; }
+        button { padding: 12px 24px; font-size: 16px; cursor: pointer; border-radius: 5px; border: none; margin: 10px; }
+        #play-btn { background: #2ecc71; color: white; }
+        #bluff-btn { background: #e74c3c; color: white; }
+        .player-tag { background: #34495e; padding: 8px; margin: 5px; display: inline-block; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="join-screen">
+        <h1>Bluff Multiplayer</h1>
+        <input type="text" id="name-input" placeholder="Your Name">
+        <button onclick="join()">Enter Lobby</button>
+    </div>
+
+    <div id="lobby" class="hidden">
+        <h2>Lobby</h2>
+        <div id="player-list"></div>
+        <button onclick="startGame()" style="background: #f39c12;">Start Game</button>
+    </div>
+
+    <div id="game-board" class="hidden">
+        <h3 id="turn-msg">Waiting...</h3>
+        
+        <div id="table-area">
+            <div style="font-size: 2rem;" id="pile-count">0</div>
+            <div>Cards in Pile</div>
+        </div>
+        <p>Target Rank: <strong id="target-rank">A</strong></p>
+        <p id="last-action"></p>
+
+        <hr>
+        <h3>Your Hand</h3>
+        <div id="my-cards"></div>
+        <button id="play-btn" onclick="playCards()">Play Selected</button>
+        <button id="bluff-btn" onclick="callBluff()">BLUFF!</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let myHand = [];
+        let selectedCards = [];
+
+        function join() {
+            const name = document.getElementById('name-input').value;
+            if(!name) return alert("Enter a name!");
+            socket.emit('join_game', name);
+            document.getElementById('join-screen').classList.add('hidden');
+            document.getElementById('lobby').classList.remove('hidden');
+        }
+
+        socket.on('player_list_updated', (players) => {
+            const list = document.getElementById('player-list');
+            list.innerHTML = players.map(p => `<div class="player-tag">${p.name}</div>`).join('');
+        });
+
+        function startGame() { socket.emit('start_game'); }
+
+        socket.on('game_started', (data) => {
+            document.getElementById('lobby').classList.add('hidden');
+            document.getElementById('game-board').classList.remove('hidden');
+            renderHand(data.hand);
+            document.getElementById('turn-msg').innerText = `${data.nextPlayerName}'s Turn`;
+        });
+
+        function renderHand(hand) {
+            myHand = hand;
+            selectedCards = [];
+            const container = document.getElementById('my-cards');
+            container.innerHTML = '';
+            hand.forEach((card, index) => {
+                const el = document.createElement('div');
+                el.className = 'card';
+                el.innerText = card.rank + card.suit;
+                if(card.suit === '♥' || card.suit === '♦') el.style.color = 'red';
+                el.onclick = () => {
+                    el.classList.toggle('selected');
+                    const foundIndex = selectedCards.indexOf(card);
+                    if(foundIndex > -1) selectedCards.splice(foundIndex, 1);
+                    else selectedCards.push(card);
+                };
+                container.appendChild(el);
+            });
+        }
+
+        function playCards() {
+            if(selectedCards.length === 0) return;
+            socket.emit('play_move', { cards: selectedCards });
+        }
+
+        function callBluff() { socket.emit('call_bluff'); }
+
+        socket.on('new_hand', (hand) => renderHand(hand));
+
+        socket.on('update_pile', (data) => {
+            document.getElementById('pile-count').innerText = data.count;
+            document.getElementById('turn-msg').innerText = `${data.nextPlayerName}'s Turn`;
+            if(data.lastClaim) document.getElementById('last-action').innerText = `Last Play: ${data.lastClaim}`;
+        });
+
+        socket.on('bluff_result', (data) => {
+            alert(data.message);
+            document.getElementById('last-action').innerText = "";
+        });
+    </script>
+</body>
+</html>
